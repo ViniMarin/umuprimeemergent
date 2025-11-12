@@ -2,44 +2,106 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\Imovel;
+use Illuminate\Contracts\View\View;
+use Illuminate\Http\Request;
 
+/**
+ * Controller HomeController
+ * 
+ * Gerencia a página inicial pública do site
+ */
 class HomeController extends Controller
 {
-    public function index(Request $request)
+    /**
+     * Exibe a página inicial com listagem e filtros de imóveis
+     * 
+     * @param Request $request
+     * @return View
+     */
+    public function index(Request $request): View
     {
-        // Base para consultas (apenas imóveis disponíveis)
-        $base = Imovel::query()->where('status', 'disponivel');
+        // Query base: apenas imóveis disponíveis
+        $query = Imovel::query()
+            ->disponivel()
+            ->with(['imagens' => fn ($q) => $q->orderBy('ordem')]);
 
-        // Lista de cidades existentes (distintas) para o filtro
-        $cidades = (clone $base)
+        // Lista de cidades para o filtro (apenas onde há imóveis disponíveis)
+        $cidades = Imovel::query()
+            ->disponivel()
             ->whereNotNull('cidade')
             ->select('cidade')
             ->distinct()
             ->orderBy('cidade')
             ->pluck('cidade');
 
-        // Query principal com imagens ordenadas
-        $query = (clone $base)->with(['imagens' => function ($q) {
-            $q->orderBy('ordem');
-        }]);
+        // Aplicar filtros
+        $this->applyFilters($query, $request);
 
-        // ----- Filtros -----
+        // Paginação com query string (mantém filtros na navegação)
+        $imoveis = $query
+            ->orderByDesc('destaque')
+            ->orderByDesc('created_at')
+            ->paginate(12)
+            ->withQueryString();
+
+        // Imóveis em destaque para exibição especial
+        $imoveisDestaque = Imovel::query()
+            ->disponivel()
+            ->destaque()
+            ->with(['imagens' => fn ($q) => $q->orderBy('ordem')])
+            ->limit(6)
+            ->get();
+
+        return view('home', compact('imoveis', 'imoveisDestaque', 'cidades'));
+    }
+
+    /**
+     * Aplica filtros à query de imóveis
+     * 
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param Request $request
+     * @return void
+     */
+    private function applyFilters($query, Request $request): void
+    {
+        // Filtro: tipo de negócio (aluguel/venda)
         if ($request->filled('tipo_negocio')) {
-            $query->where('tipo_negocio', $request->input('tipo_negocio'));
+            $query->tipoNegocio($request->input('tipo_negocio'));
         }
 
+        // Filtro: tipo de imóvel
         if ($request->filled('tipo_imovel')) {
-            // se no DB for valor único, pode trocar por where('tipo_imovel', $request->input('tipo_imovel'))
             $query->where('tipo_imovel', 'like', '%' . $request->input('tipo_imovel') . '%');
         }
 
-        // valores já chegam em "1234.56" via hidden no formulário
+        // Filtro: faixa de valores
+        $this->applyPriceFilter($query, $request);
+
+        // Filtro: cidade
+        if ($request->filled('cidade')) {
+            $query->where('cidade', $request->input('cidade'));
+        }
+
+        // Filtro: referência
+        if ($request->filled('referencia')) {
+            $query->where('referencia', 'like', '%' . $request->input('referencia') . '%');
+        }
+    }
+
+    /**
+     * Aplica filtro de faixa de preço
+     * 
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param Request $request
+     * @return void
+     */
+    private function applyPriceFilter($query, Request $request): void
+    {
         $min = $request->input('valor_min');
         $max = $request->input('valor_max');
 
-        // normaliza se vierem invertidos
+        // Normaliza se os valores vieram invertidos
         if ($min !== null && $min !== '' && $max !== null && $max !== '' && (float)$min > (float)$max) {
             [$min, $max] = [$max, $min];
         }
@@ -47,34 +109,9 @@ class HomeController extends Controller
         if ($min !== null && $min !== '') {
             $query->where('valor', '>=', (float)$min);
         }
+
         if ($max !== null && $max !== '') {
             $query->where('valor', '<=', (float)$max);
         }
-
-        if ($request->filled('cidade')) {
-            $query->where('cidade', $request->input('cidade')); // igualdade pois vem de um select
-        }
-
-        if ($request->filled('referencia')) {
-            $query->where('referencia', 'like', '%' . $request->input('referencia') . '%');
-        }
-
-        // Ordenação e paginação
-        $imoveis = $query
-            ->orderBy('destaque', 'desc')
-            ->orderBy('created_at', 'desc')
-            ->paginate(12)
-            ->withQueryString(); // mantém filtros na paginação
-
-        // Destaques
-        $imoveisDestaque = (clone $base)
-            ->with(['imagens' => function ($q) {
-                $q->orderBy('ordem');
-            }])
-            ->where('destaque', true)
-            ->limit(6)
-            ->get();
-
-        return view('home', compact('imoveis', 'imoveisDestaque', 'cidades'));
     }
 }
